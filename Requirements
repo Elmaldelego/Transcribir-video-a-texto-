@@ -1,15 +1,15 @@
-# Basic web app
+
 streamlit>=1.32.0
 
-# Video processing
+
 moviepy>=1.0.3
 pydub>=0.25.1
 
-# API and data handling
+
 requests>=2.31.0
 
-# File handling
+
 python-dotenv>=1.0.0
 
-# Optional: for better performance
+
 numpy>=1.24.0
