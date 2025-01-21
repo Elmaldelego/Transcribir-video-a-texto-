@@ -3,7 +3,7 @@ moviepy==1.0.3
 pydub==0.25.1
 requests==2.31.0
 python-dotenv==1.0.0
-numpy==1.24.0
+numpy==1.24.1
 imageio-ffmpeg==0.4.8
 decorator==4.4.2
 tqdm==4.65.0
