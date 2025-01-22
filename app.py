@@ -5,12 +5,19 @@ import tempfile
 from pydub import AudioSegment
 import warnings
 
-# Ignorar advertencias específicas de pydub
+# Configuraciones iniciales
 warnings.filterwarnings('ignore', category=SyntaxWarning)
-
-# Configurar la variable de entorno para OpenMP
 os.environ['KMP_DUPLICATE_LIB_OK']="TRUE"
 
+# Configuración de la página
+st.set_page_config(
+    page_title="Transcriptor de Video",
+    page_icon="🎥",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
+# Funciones auxiliares
 def format_time(seconds):
     """Convierte segundos a formato HH:MM:SS"""
     hours = int(seconds // 3600)
@@ -18,102 +25,155 @@ def format_time(seconds):
     seconds = int(seconds % 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-def extract_audio(video_path):
-    """Extrae el audio de un archivo de video."""
+@st.cache_data
+def load_whisper_model(model_size):
+    """Carga el modelo Whisper con caché"""
+    return WhisperModel(model_size)
+
+def extract_audio(video_file):
+    """Extrae el audio de un archivo de video"""
     try:
-        with st.spinner('Extrayendo audio del video...'):
-            audio = AudioSegment.from_file(video_path)
-            # Convertir a mono y ajustar la tasa de muestreo
-            audio = audio.set_channels(1).set_frame_rate(16000)
-            
-            # Guardar en archivo temporal
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_audio:
-                audio.export(temp_audio.name, format='wav')
-                return temp_audio.name
+        # Crear directorio temporal si no existe
+        temp_dir = tempfile.mkdtemp()
+        video_path = os.path.join(temp_dir, "temp_video.mp4")
+        audio_path = os.path.join(temp_dir, "temp_audio.wav")
+
+        # Guardar video
+        with open(video_path, "wb") as f:
+            f.write(video_file.getbuffer())
+
+        # Convertir a audio
+        audio = AudioSegment.from_file(video_path)
+        audio = audio.set_channels(1).set_frame_rate(16000)
+        audio.export(audio_path, format='wav')
+
+        return audio_path, temp_dir
     except Exception as e:
         st.error(f"Error al procesar el audio: {str(e)}")
-        return None
+        return None, None
 
-def transcribe_audio(audio_path, model, language=None):
-    """Transcribe el audio usando Whisper."""
-    try:
-        segments, _ = model.transcribe(audio_path, language=language)
-        return [(segment.start, segment.end, segment.text) for segment in segments]
-    except Exception as e:
-        st.error(f"Error en la transcripción: {str(e)}")
-        return []
+def cleanup_files(temp_dir):
+    """Limpia archivos temporales"""
+    if temp_dir and os.path.exists(temp_dir):
+        try:
+            for file in os.listdir(temp_dir):
+                os.remove(os.path.join(temp_dir, file))
+            os.rmdir(temp_dir)
+        except Exception as e:
+            st.warning(f"No se pudieron eliminar algunos archivos temporales: {str(e)}")
 
 def main():
-    st.title("Transcriptor de Video a Texto")
+    st.title("Transcriptor de Video a Texto 🎥➡️📝")
     
-    # Configuraciones
-    model_size = st.selectbox(
-        "Selecciona el tamaño del modelo",
-        ["tiny", "base", "small", "medium", "large"]
-    )
-    
-    language = st.selectbox(
-        "Selecciona el idioma",
-        ["Autodetectar", "Español", "English"]
-    )
-    
+    # Contenedor para configuraciones
+    with st.container():
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            model_size = st.selectbox(
+                "Modelo de transcripción",
+                ["tiny", "base", "small", "medium", "large"],
+                help="Modelos más grandes son más precisos pero más lentos"
+            )
+        
+        with col2:
+            language = st.selectbox(
+                "Idioma del video",
+                ["Autodetectar", "Español", "English"],
+                help="Selecciona el idioma del video para mejor precisión"
+            )
+
     # Mapeo de idiomas
     language_map = {
         "Autodetectar": None,
         "Español": "es",
         "English": "en"
     }
+
+    # Área de carga de archivo
+    st.markdown("### Subir Video")
+    video_file = st.file_uploader(
+        "Formatos soportados: MP4, AVI, MOV, MKV",
+        type=['mp4', 'avi', 'mov', 'mkv'],
+        help="Selecciona un archivo de video para transcribir"
+    )
+
+    # Estado de la aplicación
+    if 'transcription_done' not in st.session_state:
+        st.session_state.transcription_done = False
     
-    # Subida de archivo
-    video_file = st.file_uploader("Sube tu archivo de video", type=['mp4', 'avi', 'mov', 'mkv'])
-    
-    if video_file and st.button("Transcribir"):
+    if 'temp_dir' not in st.session_state:
+        st.session_state.temp_dir = None
+
+    # Procesar video
+    if video_file and st.button("Transcribir Video", help="Iniciar proceso de transcripción"):
         try:
-            # Guardar el archivo de video
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_video:
-                temp_video.write(video_file.read())
-                video_path = temp_video.name
+            # Limpiar estado anterior
+            if st.session_state.temp_dir:
+                cleanup_files(st.session_state.temp_dir)
             
-            # Extraer audio
-            audio_path = extract_audio(video_path)
-            if not audio_path:
-                st.error("No se pudo extraer el audio del video.")
-                return
-            
-            # Cargar modelo
-            with st.spinner('Cargando modelo de transcripción...'):
-                model = WhisperModel(model_size)
-            
-            # Transcribir
-            with st.spinner('Transcribiendo...'):
-                results = transcribe_audio(audio_path, model, language_map[language])
-            
-            if results:
-                # Mostrar resultados
-                transcript = "\n".join([
-                    f"[{format_time(start)} - {format_time(end)}] {text}"
-                    for start, end, text in results
-                ])
-                
-                st.text_area("Transcripción:", transcript, height=400)
-                
-                # Botón de descarga
-                st.download_button(
-                    label="Descargar transcripción",
-                    data=transcript,
-                    file_name="transcripcion.txt",
-                    mime="text/plain"
-                )
-            
-            # Limpiar archivos temporales
-            try:
-                os.unlink(video_path)
-                os.unlink(audio_path)
-            except:
-                pass
-                
+            with st.spinner("Procesando video..."):
+                # Extraer audio
+                audio_path, temp_dir = extract_audio(video_file)
+                st.session_state.temp_dir = temp_dir
+
+                if audio_path:
+                    # Cargar modelo
+                    model = load_whisper_model(model_size)
+                    
+                    # Transcribir
+                    segments, _ = model.transcribe(
+                        audio_path,
+                        language=language_map[language]
+                    )
+
+                    # Formatear resultados
+                    transcript = "\n".join([
+                        f"[{format_time(segment.start)} - {format_time(segment.end)}] {segment.text}"
+                        for segment in segments
+                    ])
+
+                    # Guardar en session state
+                    st.session_state.transcript = transcript
+                    st.session_state.transcription_done = True
+
+                    # Limpiar archivos
+                    cleanup_files(temp_dir)
+                    
         except Exception as e:
-            st.error(f"Error durante el proceso: {str(e)}")
+            st.error(f"Error durante la transcripción: {str(e)}")
+            if st.session_state.temp_dir:
+                cleanup_files(st.session_state.temp_dir)
+
+    # Mostrar resultados
+    if st.session_state.get('transcription_done', False):
+        st.markdown("### Resultado de la Transcripción")
+        st.text_area(
+            "Texto transcrito:",
+            st.session_state.transcript,
+            height=400,
+            help="Puedes copiar el texto o descargarlo usando el botón de abajo"
+        )
+        
+        # Botón de descarga
+        st.download_button(
+            label="📥 Descargar Transcripción",
+            data=st.session_state.transcript,
+            file_name="transcripcion.txt",
+            mime="text/plain",
+            help="Descargar el texto transcrito en formato TXT"
+        )
+
+    # Footer
+    st.markdown("---")
+    st.markdown(
+        """
+        <div style='text-align: center'>
+            <p>Desarrollado con ❤️ usando Streamlit y Whisper</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 if __name__ == "__main__":
     main()
