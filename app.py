@@ -8,7 +8,23 @@ import tempfile
 from pydub import AudioSegment
 import math
 from datetime import timedelta
+import subprocess
 
+# Configurar la variable de entorno para OpenMP
+os.environ['KMP_DUPLICATE_LIB_OK']="TRUE"
+
+# Función para verificar si ffmpeg está instalado
+def check_ffmpeg():
+    try:
+        subprocess.run(['ffmpeg', '-version'], capture_output=True)
+        return True
+    except FileNotFoundError:
+        return False
+
+# Verificar ffmpeg al inicio
+if not check_ffmpeg():
+    st.error("FFmpeg no está instalado en el sistema. Por favor, contacta al administrador.")
+    st.stop()
 # Configuración de la página
 st.set_page_config(
     page_title="Transcripción de Videos Largos",
