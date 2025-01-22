@@ -1,196 +1,167 @@
+import os
+# Establecer la variable de entorno al inicio
+os.environ['KMP_DUPLICATE_LIB_OK']="TRUE"
 import streamlit as st
-from moviepy.editor import VideoFileClip
-from pydub import AudioSegment
+from faster_whisper import WhisperModel
 import os
 import tempfile
-from math import ceil
-import requests
-import json
+from pydub import AudioSegment
+import math
+from datetime import timedelta
 
-def call_whisper_api(audio_file_path, api_url, api_key=None, language=None):
-    """
-    Send audio file to custom Whisper API endpoint.
-    
-    Args:
-        audio_file_path: Path to audio file
-        api_url: Custom Whisper API endpoint URL
-        api_key: Optional API key for authentication
-        language: Optional language code
-    Returns:
-        str: Transcribed text
-    """
-    headers = {}
-    if api_key:
-        headers['Authorization'] = f'Bearer {api_key}'
-    
-    with open(audio_file_path, 'rb') as audio_file:
-        files = {'audio': audio_file}
-        data = {}
-        if language:
-            data['language'] = language
-            
-        try:
-            response = requests.post(api_url, headers=headers, files=files, data=data)
-            response.raise_for_status()
-            return response.json().get('text', '')
-        except requests.exceptions.RequestException as e:
-            st.error(f"Error al llamar al API de Whisper: {str(e)}")
-            return None
+# Configuración de la página
+st.set_page_config(
+    page_title="Transcripción de Videos Largos",
+    layout="wide",
+)
 
-def split_audio(audio_segment, chunk_duration_ms=300000):  # 5 minutes chunks
-    """
-    Split audio into chunks of specified duration.
-    """
+def split_audio(audio_segment, chunk_duration=300000):  # 5 minutos en milisegundos
+    """Divide el audio en segmentos más pequeños."""
     chunks = []
-    for i in range(0, len(audio_segment), chunk_duration_ms):
-        chunks.append(audio_segment[i:i + chunk_duration_ms])
+    total_duration = len(audio_segment)
+    for i in range(0, total_duration, chunk_duration):
+        chunk = audio_segment[i:i + chunk_duration]
+        chunks.append(chunk)
     return chunks
 
-def transcribe_chunk(audio_chunk, api_url, api_key=None, language=None):
-    """
-    Transcribe a single audio chunk using Whisper API.
-    """
-    with tempfile.TemporaryDirectory() as temp_dir:
-        chunk_path = os.path.join(temp_dir, "temp_chunk.wav")
-        audio_chunk.export(chunk_path, format="wav")
-        return call_whisper_api(chunk_path, api_url, api_key, language)
+def format_timestamp(seconds):
+    """Convierte segundos a formato HH:MM:SS"""
+    return str(timedelta(seconds=int(seconds)))
 
-def transcribe_video(video_file, api_url, api_key=None, language=None, progress_bar=None):
-    """
-    Transcribe audio from video file using custom Whisper API endpoint.
-    """
+def extract_audio_from_video(video_path, progress_bar=None):
+    """Extrae el audio de un archivo de video."""
     try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Save uploaded video
-            temp_video_path = os.path.join(temp_dir, "temp_video" + os.path.splitext(video_file.name)[1])
-            with open(temp_video_path, "wb") as f:
-                f.write(video_file.getbuffer())
-
-            # Extract audio
-            video = VideoFileClip(temp_video_path)
-            if video.duration > 3600:
-                st.warning(f"El video tiene una duración de {video.duration/3600:.1f} horas.")
-            
-            temp_audio_path = os.path.join(temp_dir, "temp_audio.wav")
-            video.audio.write_audiofile(temp_audio_path, verbose=False, logger=None)
-            
-            # Convert and split audio
-            sound = AudioSegment.from_file(temp_audio_path)
-            chunks = split_audio(sound)
-            
-            # Process chunks
-            transcribed_text = []
-            for i, chunk in enumerate(chunks):
-                if progress_bar is not None:
-                    progress_bar.progress((i + 1) / len(chunks))
-                    st.write(f"Procesando segmento {i+1} de {len(chunks)}...")
-                
-                chunk_text = transcribe_chunk(chunk, api_url, api_key, language)
-                if chunk_text:
-                    transcribed_text.append(chunk_text)
-                    
-                    # Update intermediate results
-                    if i % 2 == 0:  # Update every 2 chunks
-                        st.text_area(
-                            "Transcripción en progreso...",
-                            " ".join(transcribed_text),
-                            height=150,
-                            key=f"intermediate_{i}"
-                        )
-            
-            return " ".join(transcribed_text)
-
+        # Mostrar mensaje de procesamiento
+        status_text = st.empty()
+        status_text.text("Extrayendo audio del video...")
+        
+        # Cargar el video y extraer audio
+        audio = AudioSegment.from_file(video_path)
+        
+        # Convertir a wav con una tasa de muestreo menor para reducir el tamaño
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_audio:
+            status_text.text("Optimizando audio...")
+            # Convertir a mono y reducir la tasa de muestreo
+            audio = audio.set_channels(1).set_frame_rate(16000)
+            audio.export(tmp_audio.name, format='wav')
+            status_text.empty()
+            return tmp_audio.name
     except Exception as e:
-        st.error(f"Error durante la transcripción: {str(e)}")
+        st.error(f"Error al extraer audio: {str(e)}")
         return None
 
-def main():
-    st.title("🎥 Transcriptor de Video con Whisper")
-    st.write("Sube un video para transcribir su audio usando tu endpoint de Whisper")
-
-    # API configuration
-    with st.expander("Configuración del API de Whisper"):
-        api_url = st.text_input(
-            "URL del endpoint de Whisper",
-            placeholder="https://tu-endpoint-whisper.com/v1/audio/transcriptions"
-        )
-        api_key = st.text_input(
-            "API Key (opcional)",
-            type="password",
-            placeholder="Deja en blanco si no requiere autenticación"
-        )
-        if not api_key:
-            api_key = None
-
-    # Language selection
-    languages = {
-        "Español": "es",
-        "English": "en",
-        "Français": "fr",
-        "Deutsch": "de",
-        "Italiano": "it",
-        "Português": "pt"
-    }
-    selected_language = st.selectbox(
-        "Selecciona el idioma del video",
-        options=list(languages.keys())
-    )
-
-    # File uploader
-    supported_formats = ["mp4", "avi", "mov", "mkv", "wmv", "flv"]
-    st.write(f"Formatos soportados: {', '.join(supported_formats)}")
-    st.write("Límite de tamaño: 2GB")
+def process_audio_in_chunks(file_path, model, task="transcribe", language=None):
+    """Procesa el audio en chunks y muestra el progreso."""
+    audio = AudioSegment.from_file(file_path)
+    chunks = split_audio(audio)
     
-    uploaded_file = st.file_uploader(
-        "Sube tu archivo de video",
-        type=supported_formats
-    )
-
-    if uploaded_file is not None:
-        # Show video details
-        st.write(f"Archivo subido: {uploaded_file.name}")
-        file_size = uploaded_file.size / (1024 * 1024)
-        st.write(f"Tamaño: {file_size:.2f} MB")
+    # Crear barra de progreso
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    full_result = []
+    for i, chunk in enumerate(chunks):
+        # Actualizar progreso
+        progress = (i + 1) / len(chunks)
+        progress_bar.progress(progress)
+        status_text.text(f"Procesando parte {i+1} de {len(chunks)}...")
         
-        if file_size > 1000:
-            st.warning("Este es un archivo grande. El procesamiento puede tardar varios minutos.")
+        # Guardar chunk temporal
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_chunk:
+            chunk.export(tmp_chunk.name, format='wav')
+            
+            # Procesar chunk
+            if task == "Transcripción":
+                segments, _ = model.transcribe(tmp_chunk.name, language=language)
+            else:
+                segments, _ = model.translate(tmp_chunk.name)
+            
+            # Agregar resultados
+            for segment in segments:
+                full_result.append({
+                    'start': segment.start + (i * 300),  # Ajustar tiempo según el chunk
+                    'end': segment.end + (i * 300),
+                    'text': segment.text
+                })
+            
+            # Limpiar archivo temporal
+            os.unlink(tmp_chunk.name)
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    # Formatear resultado final
+    return "\n".join([
+        f"[{format_timestamp(segment['start'])} - {format_timestamp(segment['end'])}] {segment['text']}"
+        for segment in full_result
+    ])
 
-        # Verify API configuration
-        if not api_url:
-            st.error("Por favor, configura la URL del endpoint de Whisper")
-        else:
-            # Transcription button
-            if st.button("Iniciar Transcripción"):
-                progress_bar = st.progress(0)
+def main():
+    st.title("Transcripción y Traducción de Videos Largos")
+    
+    # Configuración
+    task = st.selectbox(
+        "Selecciona la tarea",
+        ["Transcripción", "Traducción"]
+    )
+    
+    model_size = st.selectbox(
+        "Selecciona el modelo",
+        ["large", "medium", "small", "tiny"]
+    )
+    
+    language = st.selectbox(
+        "Selecciona el idioma",
+        ["Autodetect", "Spanish", "English"]
+    )
+    
+    language = None if language == "Autodetect" else language
+    
+    # Subida de archivo
+    st.info("Puedes subir videos de hasta 1 hora de duración.")
+    uploaded_file = st.file_uploader(
+        "Sube tu archivo de video", 
+        type=['mp4', 'avi', 'mkv', 'mov']
+    )
+    
+    if uploaded_file and st.button("Procesar"):
+        with st.spinner('Iniciando procesamiento...'):
+            # Guardar archivo temporal
+            temp_path = None
+            temp_audio_path = None
+            
+            try:
+                # Guardar el video subido
+                with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
+                    tmp_file.write(uploaded_file.getbuffer())
+                    temp_path = tmp_file.name
                 
-                with st.spinner("Transcribiendo el video..."):
-                    transcribed_text = transcribe_video(
-                        uploaded_file,
-                        api_url=api_url,
-                        api_key=api_key,
-                        language=languages[selected_language],
-                        progress_bar=progress_bar
-                    )
+                # Extraer y procesar audio
+                temp_audio_path = extract_audio_from_video(temp_path)
+                if temp_audio_path:
+                    # Cargar modelo
+                    model = WhisperModel(model_size)
                     
-                    if transcribed_text:
-                        st.success("¡Transcripción completada!")
-                        
-                        # Show transcription
-                        st.subheader("Texto transcrito:")
-                        st.text_area(
-                            "Resultado final",
-                            transcribed_text,
-                            height=300,
-                            key="transcript"
-                        )
-                        
-                        # Download button
-                        st.download_button(
-                            "Descargar transcripción",
-                            transcribed_text,
-                            file_name="transcripcion.txt",
-                            mime="text/plain"
-                        )
+                    # Procesar audio en chunks
+                    result = process_audio_in_chunks(temp_audio_path, model, task, language)
+                    
+                    # Mostrar resultado
+                    st.text_area("Resultado:", result, height=400)
+                    
+                    # Botón de descarga
+                    st.download_button(
+                        label="Descargar transcripción",
+                        data=result,
+                        file_name="transcripcion.txt",
+                        mime="text/plain"
+                    )
+            
+            finally:
+                # Limpiar archivos temporales
+                if temp_path and os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                if temp_audio_path and os.path.exists(temp_audio_path):
+                    os.unlink(temp_audio_path)
 
 if __name__ == "__main__":
     main()
