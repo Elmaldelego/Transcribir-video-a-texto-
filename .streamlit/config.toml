@@ -1,5 +1,9 @@
 [server]
-enableStaticServing = true
+maxUploadSize = 1000
+maxMessageSize = 1000
 
-[runner]
-pythonPath = "python3.9"
+[theme]
+primaryColor = "#FF4B4B"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F2F6"
+textColor = "#262730"
